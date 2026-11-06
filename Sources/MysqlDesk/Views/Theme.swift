@@ -20,6 +20,8 @@ enum Theme {
         case .purple: Color(red: 0.58, green: 0.40, blue: 0.94)
         case .orange: Color(red: 0.98, green: 0.62, blue: 0.20)
         case .red: Color(red: 0.93, green: 0.30, blue: 0.27)
+        // Lighter and more neutral than .none, so a grey tag still stands out.
+        case .grey: Color(red: 0.72, green: 0.73, blue: 0.75)
         }
     }
 }

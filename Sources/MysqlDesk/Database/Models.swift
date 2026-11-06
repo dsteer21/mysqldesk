@@ -31,7 +31,7 @@ enum TLSMode: String, Codable, CaseIterable, Identifiable {
 
 /// Optional colour tag so production servers stand out in the sidebar and tab bar.
 enum ConnectionColour: String, Codable, CaseIterable, Identifiable {
-    case none, green, blue, purple, orange, red
+    case none, green, blue, purple, orange, red, grey
 
     var id: String { rawValue }
     var title: String { self == .none ? "None" : rawValue.capitalized }
