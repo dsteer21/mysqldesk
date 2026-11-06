@@ -332,7 +332,7 @@ final class AppStore {
                     throw error
                 }
                 await session.close()
-                guard case .rows(_, let rows, _)? = responses.first, let create = rows.first?[1] else { return }
+                guard case .rows(_, let rows, _, _)? = responses.first, let create = rows.first?[1] else { return }
                 newTab(connectionID: config.id, database: schema, sql: create + ";", title: "\(table) create")
             } catch {
                 Banner.shared.error("Couldn't read the table definition", detail: error.localizedDescription)
@@ -402,16 +402,21 @@ final class AppStore {
             do {
                 let responses = try await session.execute(statement, maxRows: maxRows)
                 let duration = Date().timeIntervalSince(started)
+                // MySQL reports many problems as warnings, not errors (e.g. comparing a number column with
+                // text). Fetch their text straight away, before another statement clears them.
+                let warningMessages = await warnings(for: responses, on: session)
                 for response in responses {
                     switch response {
-                    case .rows(let columns, let rows, let total):
+                    case .rows(let columns, let rows, let total, let warnings):
                         tab.results.append(ResultSet(statement: statement, columns: columns, rows: rows, totalRows: total, duration: duration))
-                        tab.outcomes.append(StatementOutcome(sql: statement, kind: .rows(total), duration: duration, warnings: 0))
+                        tab.outcomes.append(StatementOutcome(sql: statement, kind: .rows(total), duration: duration, warnings: warnings,
+                                                             warningMessages: warnings > 0 ? warningMessages : []))
                     case .ok(let affected, let insertID, let warnings, let info):
                         // A CALL ends with a bare OK after its result sets; it adds nothing to show.
                         if responses.count > 1 && affected == 0 { continue }
                         tab.outcomes.append(StatementOutcome(sql: statement, kind: .affected(rows: affected, insertID: insertID, info: info),
-                                                             duration: duration, warnings: warnings))
+                                                             duration: duration, warnings: warnings,
+                                                             warningMessages: warnings > 0 ? warningMessages : []))
                     }
                 }
                 if SQL.verb(of: statement) == "USE" {
@@ -429,6 +434,18 @@ final class AppStore {
         tab.showMessages = tab.results.isEmpty || tab.outcomes.contains(where: \.isError)
         addHistory(statements.joined(separator: ";\n") + ";", connectionID: connectionID, database: tab.database)
         tabsChanged()
+    }
+
+    /// The text of a statement's warnings ("Warning 1292: Truncated incorrect DECIMAL value: 'abc'").
+    private func warnings(for responses: [QueryResponse], on session: DatabaseConnection) async -> [String] {
+        let count = responses.reduce(0) { total, response in
+            switch response {
+            case .rows(_, _, _, let warnings), .ok(_, _, let warnings, _): total + warnings
+            }
+        }
+        guard count > 0, case .rows(_, let rows, _, _)? = try? await session.execute("SHOW WARNINGS", maxRows: 100).first else { return [] }
+        // SHOW WARNINGS columns: Level, Code, Message
+        return rows.map { "\($0[0] ?? "Warning") \($0[1] ?? ""): \($0[2] ?? "")" }
     }
 
     func cancel(_ tab: QueryTab?) {
@@ -490,7 +507,7 @@ final class AppStore {
         do {
             let session = try await tab.session(on: server)
             let response = try await session.execute("SHOW COLUMNS FROM \(SQL.identifier(schema)).\(SQL.identifier(table))", maxRows: .max)
-            guard case .rows(_, let found, _)? = response.first else { return .failure(EditError(message: "Couldn't read the table's columns.")) }
+            guard case .rows(_, let found, _, _)? = response.first else { return .failure(EditError(message: "Couldn't read the table's columns.")) }
             rows = found
         } catch {
             return .failure(EditError(message: error.localizedDescription))

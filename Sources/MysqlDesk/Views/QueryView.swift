@@ -297,7 +297,8 @@ struct ResultsPanel: View {
                     }
                 }
                 pill("Messages", count: nil, selected: tab.showMessages || tab.results.isEmpty,
-                     error: tab.outcomes.contains(where: \.isError)) {
+                     error: tab.outcomes.contains(where: \.isError),
+                     warnings: tab.outcomes.reduce(0) { $0 + $1.warnings }) {
                     tab.showMessages = true
                 }
                 Spacer()
@@ -344,6 +345,20 @@ struct ResultsPanel: View {
                 } else if let result = tab.currentResult {
                     ResultsTable(tab: tab, result: result, filter: tab.showColumnFilter ? tab.columnFilter : "",
                                  editsVersion: tab.editsVersion, store: store)
+                        .overlay {
+                            if result.rows.isEmpty {
+                                // An empty grid looks like nothing happened, so say so.
+                                VStack(spacing: 4) {
+                                    Text("No rows returned").font(.system(size: 13, weight: .semibold))
+                                    Text("The query ran without errors, but nothing matched.")
+                                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 12)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Theme.panel))
+                                .allowsHitTesting(false)
+                            }
+                        }
                 } else if tab.running {
                     ProgressView("Running…").frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -406,6 +421,16 @@ struct ResultsPanel: View {
                     .foregroundStyle(result.isTruncated ? .orange : .secondary)
                 if !tab.selectedRows.isEmpty { Text("· \(tab.selectedRows.count) selected") }
                 Text("· \(result.columns.count) columns · \(Formats.duration(result.duration))")
+                let warnings = tab.outcomes.reduce(0) { $0 + $1.warnings }
+                if warnings > 0 {
+                    Button {
+                        tab.showMessages = true
+                    } label: {
+                        Label("\(warnings) warning\(warnings == 1 ? "" : "s"): see Messages", systemImage: "exclamationmark.triangle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.orange)
+                }
             } else if let last = tab.outcomes.last {
                 Text(last.summary).lineLimit(1)
             }
@@ -432,12 +457,18 @@ struct ResultsPanel: View {
         .background(Theme.toolbar)
     }
 
-    private func pill(_ title: String, count: Int?, selected: Bool, error: Bool = false, action: @escaping () -> Void) -> some View {
+    private func pill(_ title: String, count: Int?, selected: Bool, error: Bool = false, warnings: Int = 0,
+                      action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
-                if error { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange) }
+                if error {
+                    Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+                } else if warnings > 0 {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                }
                 Text(title)
                 if let count { Text(count.formatted()).foregroundStyle(.secondary) }
+                if warnings > 0 && !error { Text(warnings.formatted()).foregroundStyle(.orange) }
             }
             .font(.system(size: 11, weight: selected ? .semibold : .regular))
             .padding(.horizontal, 8)
@@ -459,8 +490,8 @@ private struct MessagesView: View {
         } else {
             List(outcomes) { outcome in
                 HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: outcome.isError ? "xmark.octagon.fill" : "checkmark.circle.fill")
-                        .foregroundStyle(outcome.isError ? .red : .green)
+                    Image(systemName: outcome.isError ? "xmark.octagon.fill" : outcome.warnings > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(outcome.isError ? .red : outcome.warnings > 0 ? .orange : .green)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(outcome.summary)
                             .font(.system(size: 12, weight: .medium))
@@ -471,6 +502,12 @@ private struct MessagesView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                             .textSelection(.enabled)
+                        ForEach(Array(outcome.warningMessages.enumerated()), id: \.offset) { _, message in
+                            Label(message, systemImage: "exclamationmark.triangle.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.orange)
+                                .textSelection(.enabled)
+                        }
                     }
                     Spacer()
                     VStack(alignment: .trailing, spacing: 2) {

@@ -12,7 +12,7 @@ struct QueryError: LocalizedError {
 
 /// What the server sent back for one statement.
 enum QueryResponse {
-    case rows(columns: [ResultColumn], rows: [[String?]], total: Int)
+    case rows(columns: [ResultColumn], rows: [[String?]], total: Int, warnings: Int)
     case ok(affected: UInt64, insertID: UInt64, warnings: Int, info: String)
 }
 
@@ -73,7 +73,7 @@ actor DatabaseConnection {
             try? await connection.close().get()
             throw error
         }
-        guard case .rows(_, let rows, _)? = info.first, let row = rows.first else {
+        guard case .rows(_, let rows, _, _)? = info.first, let row = rows.first else {
             try? await connection.close().get()
             throw QueryError(message: "The server didn't report its version.")
         }
@@ -87,7 +87,7 @@ actor DatabaseConnection {
 
     /// First column of every row, for SHOW DATABASES and similar lists.
     func strings(_ sql: String) async throws -> [String] {
-        guard case .rows(_, let rows, _)? = try await execute(sql, maxRows: .max).first else { return [] }
+        guard case .rows(_, let rows, _, _)? = try await execute(sql, maxRows: .max).first else { return [] }
         return rows.compactMap { $0.first ?? nil }
     }
 
@@ -207,8 +207,9 @@ private final class TextQueryCommand: MySQLCommand, @unchecked Sendable {
 
         case .rows:
             if packet.isEOF && packet.payload.readableBytes < 0xFF_FFFF {
-                let more = terminatorStatus(packet, capabilities: capabilities) & Self.moreResultsExist != 0
-                responses.append(.rows(columns: definitions.map(Self.column), rows: rows, total: total))
+                let (status, warnings) = terminator(packet, capabilities: capabilities)
+                let more = status & Self.moreResultsExist != 0
+                responses.append(.rows(columns: definitions.map(Self.column), rows: rows, total: total, warnings: warnings))
                 rows = []
                 total = 0
                 state = .ready
@@ -223,17 +224,21 @@ private final class TextQueryCommand: MySQLCommand, @unchecked Sendable {
         }
     }
 
-    /// Status flags from the packet that ends a result set (an OK packet when EOF is deprecated, else a legacy EOF).
-    private func terminatorStatus(_ packet: MySQLPacket, capabilities: MySQLProtocol.CapabilityFlags) -> UInt16 {
+    /// Status flags and warning count from the packet that ends a result set
+    /// (an OK packet when EOF is deprecated, else a legacy EOF, which has them the other way round).
+    private func terminator(_ packet: MySQLPacket, capabilities: MySQLProtocol.CapabilityFlags) -> (status: UInt16, warnings: Int) {
         var payload = packet.payload
         payload.moveReaderIndex(forwardBy: 1)
         if capabilities.contains(.CLIENT_DEPRECATE_EOF) {
             _ = payload.readLengthEncoded()
             _ = payload.readLengthEncoded()
-            return payload.readInteger(endianness: .little, as: UInt16.self) ?? 0
+            let status = payload.readInteger(endianness: .little, as: UInt16.self) ?? 0
+            let warnings = payload.readInteger(endianness: .little, as: UInt16.self) ?? 0
+            return (status, Int(warnings))
         }
-        _ = payload.readInteger(endianness: .little, as: UInt16.self) // warnings
-        return payload.readInteger(endianness: .little, as: UInt16.self) ?? 0
+        let warnings = payload.readInteger(endianness: .little, as: UInt16.self) ?? 0
+        let status = payload.readInteger(endianness: .little, as: UInt16.self) ?? 0
+        return (status, Int(warnings))
     }
 
     private static func column(_ definition: MySQLProtocol.ColumnDefinition41) -> ResultColumn {

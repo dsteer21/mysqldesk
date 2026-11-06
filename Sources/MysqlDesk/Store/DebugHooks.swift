@@ -261,6 +261,13 @@ enum SelfTest {
                   "\(String(describing: after.currentResult?.rows))")
         }
 
+        let warnedTab = await runTab("SELECT CAST('12abc' AS UNSIGNED) AS n")
+        check("warning text shown in Messages", warnedTab.outcomes.first?.warningMessages.first?.contains("1292") == true,
+              "\(warnedTab.outcomes.first?.warningMessages ?? [])")
+        let failed = await runTab("SELECT * FROM no_such_table")
+        check("error shown in Messages", failed.showMessages && failed.outcomes.first?.isError == true
+              && failed.outcomes.first?.summary.contains("1146") == true, failed.outcomes.first?.summary ?? "")
+
         let join = await runTab("SELECT a.id, b.name FROM items a JOIN items b ON b.id = a.id")
         if let result = join.currentResult, case .failure(let error) = await store.editContext(for: join, result: result) {
             check("join without a single table's key is refused", error.message.contains("primary key") || error.message.contains("more than one"), error.message)
@@ -310,7 +317,7 @@ enum SelfTest {
         }
 
         let select = try await connection.execute("SELECT * FROM items ORDER BY id", maxRows: 100)
-        guard case .rows(let columns, let rows, let total)? = select.first else {
+        guard case .rows(let columns, let rows, let total, _)? = select.first else {
             check("select returns rows", false)
             return
         }
@@ -325,15 +332,22 @@ enum SelfTest {
         check("decimal text", rows[0][2] == "24.99")
         check("column table name", columns[1].table == "items", columns[1].table)
 
+        let warned = try await connection.execute("SELECT CAST('12abc' AS UNSIGNED) AS n", maxRows: 1)
+        if case .rows(_, let rows, _, let warnings)? = warned.first {
+            check("warnings counted on a result set", warnings == 1 && rows.first?.first == "12", "\(warnings)")
+        } else {
+            check("warning query returns rows", false)
+        }
+
         let empty = try await connection.execute("SELECT id, name FROM items WHERE 1 = 0", maxRows: 100)
-        if case .rows(let columns, let rows, _)? = empty.first {
+        if case .rows(let columns, let rows, _, _)? = empty.first {
             check("empty result keeps its columns", columns.map(\.name) == ["id", "name"] && rows.isEmpty)
         } else {
             check("empty result returns a result set", false)
         }
 
         let capped = try await connection.execute("SELECT a.id FROM items a, items b, items c", maxRows: 10)
-        if case .rows(_, let rows, let total)? = capped.first {
+        if case .rows(_, let rows, let total, _)? = capped.first {
             check("rows past the cap are counted, not kept", rows.count == 10 && total == 27, "\(rows.count)/\(total)")
         }
 
@@ -344,7 +358,7 @@ enum SelfTest {
             check("syntax error is readable", (error as? QueryError)?.code == 1064, error.localizedDescription)
         }
         let after = try await connection.execute("SELECT 1", maxRows: 1)
-        check("connection still usable after an error", { if case .rows(_, let r, _)? = after.first { return r.first?.first == "1" }; return false }())
+        check("connection still usable after an error", { if case .rows(_, let r, _, _)? = after.first { return r.first?.first == "1" }; return false }())
 
         let shown = try await connection.strings("SHOW FULL TABLES FROM `mysqldesk_selftest` WHERE Table_type = 'BASE TABLE'")
         check("SHOW FULL TABLES lists base tables", shown == ["items"], "\(shown)")
@@ -358,7 +372,7 @@ enum SelfTest {
         _ = try? await sleeper.value
         check("KILL QUERY stops a running query", Date().timeIntervalSince(started) < 4, "\(Date().timeIntervalSince(started)) s")
         let still = try? await tab.execute("SELECT DATABASE()", maxRows: 1)
-        check("session opened on the requested schema", { if case .rows(_, let r, _)? = still?.first { return r.first?.first == "mysqldesk_selftest" }; return false }())
+        check("session opened on the requested schema", { if case .rows(_, let r, _, _)? = still?.first { return r.first?.first == "mysqldesk_selftest" }; return false }())
         await tab.close()
 
         try await editing(config: config)
@@ -367,7 +381,7 @@ enum SelfTest {
         _ = try await connection.execute("CREATE PROCEDURE two() BEGIN SELECT 1 AS a; SELECT 2 AS b, 3 AS c; END", maxRows: 0)
         do {
             let call = try await connection.execute("CALL two()", maxRows: 10)
-            let sets = call.compactMap { if case .rows(let c, _, _) = $0 { return c.map(\.name) } else { return nil } }
+            let sets = call.compactMap { if case .rows(let c, _, _, _) = $0 { return c.map(\.name) } else { return nil } }
             check("CALL returns both result sets", sets == [["a"], ["b", "c"]], "\(call)")
         } catch {
             check("CALL with result sets gives the known 1312 limitation", (error as? QueryError)?.code == 1312, error.localizedDescription)

@@ -119,7 +119,7 @@ final class Server: Identifiable {
                 WHERE TABLE_TYPE = 'BASE TABLE'
                 ORDER BY TABLE_SCHEMA, TABLE_NAME
                 """
-            guard case .rows(_, let rows, _)? = try await metaConnection().execute(sql, maxRows: .max).first else { return }
+            guard case .rows(_, let rows, _, _)? = try await metaConnection().execute(sql, maxRows: .max).first else { return }
             let grouped = Dictionary(grouping: rows, by: { $0[0] ?? "" })
             for schema in schemas {
                 schema.tables = grouped[schema.name]?.compactMap { $0[1] } ?? []

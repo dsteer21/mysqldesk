@@ -130,6 +130,8 @@ struct StatementOutcome: Identifiable {
     let kind: Kind
     let duration: TimeInterval
     let warnings: Int
+    /// The text of those warnings, from SHOW WARNINGS ("Warning 1292: Truncated incorrect …").
+    var warningMessages: [String] = []
     let date = Date()
 
     var isError: Bool {
@@ -141,7 +143,7 @@ struct StatementOutcome: Identifiable {
 
     var summary: String {
         switch kind {
-        case .rows(let count): "\(count.formatted()) row\(count == 1 ? "" : "s") returned"
+        case .rows(let count): "\(count.formatted()) row\(count == 1 ? "" : "s") returned" + (warnings > 0 ? " · \(warnings) warning\(warnings == 1 ? "" : "s")" : "")
         case .affected(let rows, let insertID, let info):
             [
                 "\(rows.formatted()) row\(rows == 1 ? "" : "s") affected",
