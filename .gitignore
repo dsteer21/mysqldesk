@@ -1,0 +1,9 @@
+.build/
+build/
+.swiftpm/
+*.xcodeproj/
+.DS_Store
+
+# Brief with screenshots of internal server names/IPs: keep out of the public repo.
+MySQL Desk Feature List.rtfd/
+CLAUDE.local.md
