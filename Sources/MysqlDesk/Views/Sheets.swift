@@ -160,7 +160,7 @@ struct CellEditorSheet: View {
     }
 }
 
-/// The UPDATE statements Apply is about to run, for a final check.
+/// The UPDATE and DELETE statements Apply is about to run, for a final check.
 struct ApplyPreviewSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -168,9 +168,15 @@ struct ApplyPreviewSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Apply \(preview.statements.count) Update\(preview.statements.count == 1 ? "" : "s")?").font(.title2.bold())
+            let deletes = preview.statements.filter { $0.hasPrefix("DELETE") }.count
+            Text("Apply \(preview.statements.count) Change\(preview.statements.count == 1 ? "" : "s")?").font(.title2.bold())
             Text("These run in a single transaction: if any fails, none are saved.")
                 .foregroundStyle(.secondary)
+            if deletes > 0 {
+                Label("\(deletes) row\(deletes == 1 ? "" : "s") will be deleted from the table. This can't be undone.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+            }
             ScrollView {
                 Text(preview.statements.joined(separator: "\n\n"))
                     .font(.system(size: 12, design: .monospaced))

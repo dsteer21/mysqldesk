@@ -1,17 +1,18 @@
 #!/bin/zsh
-# Publishes a GitHub release: ./scripts/release.sh 1.1.0
+# Publishes a GitHub release of the version in ./VERSION: ./scripts/release.sh (or ./scripts/release.sh 1.3.0 to double-check it)
 # Builds the DMG, tags the pushed HEAD as v<version> and uploads MysqlDesk-<version>.dmg plus MysqlDesk.dmg,
 # so https://github.com/dsteer21/mysqldesk/releases/latest/download/MysqlDesk.dmg always serves the newest build.
 set -euo pipefail
 
 cd "${0:A:h}/.."
-VERSION="${1:-}"
+VERSION="$(<VERSION)"
 TAG="v${VERSION}"
 GH="$(command -v gh || echo /opt/homebrew/bin/gh)"
 
 fail() { echo "✗ $1" >&2; exit 1; }
 
-[[ "$VERSION" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || fail "Usage: ./scripts/release.sh <version>, e.g. 1.1.0"
+[[ "$VERSION" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || fail "VERSION should hold a version such as 1.3.0, not '$VERSION'"
+[[ -z "${1:-}" || "$1" == "$VERSION" ]] || fail "VERSION says $VERSION, not $1: update the VERSION file and commit it first"
 "$GH" auth status >/dev/null 2>&1 || fail "Log in to GitHub first: gh auth login"
 
 # The release must match code that is on GitHub, so refuse uncommitted or unpushed work.

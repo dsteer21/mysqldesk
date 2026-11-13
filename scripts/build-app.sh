@@ -4,7 +4,7 @@ set -euo pipefail
 
 cd "${0:A:h}/.."
 APP="build/MysqlDesk.app"
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-$(<VERSION)}"
 
 # Universal binary (Apple Silicon + Intel) so the app runs on any Mac with macOS 14+.
 ARCHS=(--arch arm64 --arch x86_64)
@@ -36,12 +36,29 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+    <!-- .sql files can be dropped on the app icon or opened with MysqlDesk from Finder.
+         Alternate rank: MysqlDesk is offered, but doesn't take over as the default .sql app. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>SQL Script</string>
+            <key>CFBundleTypeRole</key><string>Editor</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>org.iso.sql</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST
 
-# Ad-hoc signature so Gatekeeper lets a locally built app run.
-codesign --force --sign - "$APP"
+# Sign with the same certificate every time, so macOS recognises each new build as the same app and
+# Keychain "Always Allow" keeps working after updates. An ad-hoc signature (-) changes with every build,
+# which makes macOS ask for the Keychain password again. Uses the first Apple Development certificate in
+# the login keychain, or ad-hoc if there isn't one; set SIGN_IDENTITY to choose another (or - for ad-hoc).
+SIGN_IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/ { print $2; exit }')}"
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
+codesign --force --sign "$SIGN_IDENTITY" "$APP"
+[[ "$SIGN_IDENTITY" == "-" ]] && echo "  (ad-hoc signed: Keychain will ask again after each update)" || echo "  Signed with: $SIGN_IDENTITY"
 echo "✓ Built $APP"
 
 if [[ "${1:-}" == "--install" ]]; then

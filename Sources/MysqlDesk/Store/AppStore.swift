@@ -72,7 +72,7 @@ final class AppStore {
         let nullable: Bool
     }
 
-    /// The UPDATE statements shown for confirmation before they're run.
+    /// The UPDATE and DELETE statements shown for confirmation before they're run.
     struct ApplyPreview: Identifiable {
         let id = UUID()
         let tabID: UUID
@@ -98,6 +98,8 @@ final class AppStore {
     private var maxRows: Int { max(UserDefaults.standard.object(forKey: "maxRows") as? Int ?? 50_000, 100) }
     private var tableRowLimit: Int { UserDefaults.standard.object(forKey: "tableRowLimit") as? Int ?? 1000 }
     private var stopOnError: Bool { UserDefaults.standard.object(forKey: "stopOnError") as? Bool ?? true }
+    /// A run keeps at most this many result grids; later statements still run and are listed in Messages.
+    static let maxResultSets = 10
 
     // MARK: Lookups
 
@@ -305,6 +307,44 @@ final class AppStore {
         Storage.save(tabs.map(\.saved), to: "tabs.json")
     }
 
+    // MARK: Opening .sql files
+
+    /// Files bigger than this would make the editor crawl; a dump that size is better run with `mysql`.
+    static let maxOpenFileSize = 10_000_000
+
+    /// ⌘O, or .sql files dropped on the app icon or opened from Finder. Each opens in a new tab with
+    /// no connection chosen, and the server picker open, so a script never runs somewhere by accident.
+    func open(_ urls: [URL]) {
+        for url in urls {
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            guard size <= Self.maxOpenFileSize else {
+                Banner.shared.error("“\(url.lastPathComponent)” is too large to open",
+                                    detail: "Files over \(Self.maxOpenFileSize / 1_000_000) MB are best run with the mysql command-line client.")
+                continue
+            }
+            guard let data = try? Data(contentsOf: url),
+                  let sql = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
+                Banner.shared.error("Couldn't read “\(url.lastPathComponent)”")
+                continue
+            }
+            let tab = QueryTab(title: url.deletingPathExtension().lastPathComponent, sql: sql)
+            tabs.append(tab)
+            selectedTabID = tab.id
+            tabsChanged()
+            // Wait a moment for the tab's toolbar to appear before opening its picker.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { tab.showTargetPicker = true }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func showOpenPanel() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "sql") ?? .plainText, .plainText]
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        open(panel.urls)
+    }
+
     // MARK: Sidebar actions
 
     func openTable(_ table: String, in schema: String, on server: Server, limit: Bool = true) {
@@ -399,8 +439,10 @@ final class AppStore {
         for statement in statements {
             if tab.cancelled { break }
             let started = Date()
+            // Past the limit, rows aren't fetched for viewing, only counted.
+            let full = tab.results.count >= Self.maxResultSets
             do {
-                let responses = try await session.execute(statement, maxRows: maxRows)
+                let responses = try await session.execute(statement, maxRows: full ? 0 : maxRows)
                 let duration = Date().timeIntervalSince(started)
                 // MySQL reports many problems as warnings, not errors (e.g. comparing a number column with
                 // text). Fetch their text straight away, before another statement clears them.
@@ -408,9 +450,14 @@ final class AppStore {
                 for response in responses {
                     switch response {
                     case .rows(let columns, let rows, let total, let warnings):
-                        tab.results.append(ResultSet(statement: statement, columns: columns, rows: rows, totalRows: total, duration: duration))
-                        tab.outcomes.append(StatementOutcome(sql: statement, kind: .rows(total), duration: duration, warnings: warnings,
-                                                             warningMessages: warnings > 0 ? warningMessages : []))
+                        var outcome = StatementOutcome(sql: statement, kind: .rows(total), duration: duration, warnings: warnings,
+                                                       warningMessages: warnings > 0 ? warningMessages : [])
+                        if tab.results.count < Self.maxResultSets {
+                            tab.results.append(ResultSet(statement: statement, columns: columns, rows: rows, totalRows: total, duration: duration))
+                        } else {
+                            outcome.note = "Not shown: only the first \(Self.maxResultSets) results are kept"
+                        }
+                        tab.outcomes.append(outcome)
                     case .ok(let affected, let insertID, let warnings, let info):
                         // A CALL ends with a bare OK after its result sets; it adds nothing to show.
                         if responses.count > 1 && affected == 0 { continue }
@@ -540,10 +587,10 @@ final class AppStore {
                                     nullable: nullable, enumOptions: enumOptions))
     }
 
-    /// Apply button: show the UPDATE statements first.
+    /// Apply button: show the UPDATE and DELETE statements first.
     func previewEdits(_ tab: QueryTab?) {
         guard let tab, let result = tab.editedResult, case .success(let context)? = tab.editContexts[result.id] else { return }
-        let statements = context.updates(for: result, edits: tab.edits)
+        let statements = context.statements(for: result, edits: tab.edits, deletions: tab.deletions)
         guard !statements.isEmpty else { return }
         applyPreview = ApplyPreview(tabID: tab.id, statements: statements)
     }
@@ -572,10 +619,16 @@ final class AppStore {
         for (row, changes) in tab.edits {
             for (column, value) in changes { result.setValue(value, row: row, column: column) }
         }
-        let count = tab.edits.count
+        let deleted = tab.deletions
+        let updated = tab.edits.keys.filter { !deleted.contains($0) }.count
+        result.removeRows(deleted)
+        tab.selectedRows = []
         tab.revertEdits()
         addHistory(preview.statements.joined(separator: "\n"), connectionID: config.id, database: tab.database)
-        Banner.shared.info("Updated \(count) row\(count == 1 ? "" : "s")")
+        Banner.shared.info([
+            updated > 0 ? "Updated \(updated) row\(updated == 1 ? "" : "s")" : nil,
+            deleted.isEmpty ? nil : "Deleted \(deleted.count) row\(deleted.count == 1 ? "" : "s")",
+        ].compactMap { $0 }.joined(separator: " · "))
     }
 
     // MARK: Favourites

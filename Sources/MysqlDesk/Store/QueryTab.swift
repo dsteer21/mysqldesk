@@ -31,6 +31,8 @@ final class QueryTab: Identifiable {
 
     /// Unapplied grid edits: result row → column → new value (nil means NULL), for `editsResultID`.
     private(set) var edits: [Int: [Int: String?]] = [:]
+    /// Rows marked for deletion in that same result (result row indexes), deleted on Apply.
+    private(set) var deletions: Set<Int> = []
     private(set) var editsResultID: UUID?
     /// Bumped on every edit so the grid knows to redraw.
     private(set) var editsVersion = 0
@@ -59,7 +61,8 @@ final class QueryTab: Identifiable {
         return results[selectedResult]
     }
 
-    var editCount: Int { edits.values.reduce(0) { $0 + $1.count } }
+    /// Pending changes: each edited cell plus each row marked for deletion.
+    var editCount: Int { edits.values.reduce(0) { $0 + $1.count } + deletions.count }
 
     /// The result the pending edits belong to.
     var editedResult: ResultSet? { results.first { $0.id == editsResultID } }
@@ -74,11 +77,20 @@ final class QueryTab: Identifiable {
         result.id == editsResultID && edits[row]?[column] != nil
     }
 
+    func isDeleted(row: Int, in result: ResultSet) -> Bool {
+        result.id == editsResultID && deletions.contains(row)
+    }
+
+    /// Pending changes belong to one result at a time; starting on another drops the old ones.
+    private func beginChanges(in result: ResultSet) {
+        guard editsResultID != result.id else { return }
+        edits = [:]
+        deletions = []
+        editsResultID = result.id
+    }
+
     func setEdit(_ value: String?, row: Int, column: Int, in result: ResultSet) {
-        if editsResultID != result.id {
-            edits = [:]
-            editsResultID = result.id
-        }
+        beginChanges(in: result)
         var changes = edits[row] ?? [:]
         if value == result.rows[row][column] {
             changes.removeValue(forKey: column) // back to the original: no longer a change
@@ -89,9 +101,21 @@ final class QueryTab: Identifiable {
         editsVersion += 1
     }
 
+    /// Marks rows for deletion, or unmarks them if they're all marked already.
+    func toggleDeletion(rows: [Int], in result: ResultSet) {
+        beginChanges(in: result)
+        if rows.allSatisfy(deletions.contains) {
+            deletions.subtract(rows)
+        } else {
+            deletions.formUnion(rows)
+        }
+        editsVersion += 1
+    }
+
     func revertEdits() {
-        guard !edits.isEmpty else { return }
+        guard !edits.isEmpty || !deletions.isEmpty else { return }
         edits = [:]
+        deletions = []
         editsVersion += 1
     }
 

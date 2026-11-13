@@ -278,10 +278,17 @@ struct TargetPicker: View {
 }
 
 /// Results under the editor: one pill per result set plus Messages, the grid, and a status line.
+/// When a run returns several results they're stacked one above another (or shown one at a time,
+/// using the layout button); clicking a grid makes it the current result for export and copying.
 struct ResultsPanel: View {
     @Environment(AppStore.self) private var store
     let tab: QueryTab
     @FocusState private var filterFocused: Bool
+    @AppStorage("stackResults") private var stackResults = true
+    /// Set by clicking a pill in the stacked layout, to scroll that result into view.
+    @State private var scrollTarget: UUID?
+
+    private var stacked: Bool { stackResults && tab.results.count > 1 }
 
     var body: some View {
         @Bindable var tab = tab
@@ -291,9 +298,8 @@ struct ResultsPanel: View {
                 ForEach(Array(tab.results.enumerated()), id: \.element.id) { index, result in
                     pill(tab.results.count == 1 ? "Result" : "Result \(index + 1)", count: result.totalRows,
                          selected: !tab.showMessages && tab.selectedResult == index) {
-                        tab.selectedResult = index
-                        tab.showMessages = false
-                        tab.selectedRows = []
+                        select(index)
+                        scrollTarget = result.id
                     }
                 }
                 pill("Messages", count: nil, selected: tab.showMessages || tab.results.isEmpty,
@@ -302,6 +308,15 @@ struct ResultsPanel: View {
                     tab.showMessages = true
                 }
                 Spacer()
+                if tab.results.count > 1 {
+                    Button {
+                        stackResults.toggle()
+                    } label: {
+                        Image(systemName: stackResults ? "rectangle" : "rectangle.split.1x2")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(stackResults ? "Show one result at a time" : "Show every result, one above another")
+                }
                 if tab.currentResult != nil {
                     Button {
                         tab.showColumnFilter.toggle()
@@ -342,23 +357,10 @@ struct ResultsPanel: View {
             Group {
                 if tab.showMessages || (tab.results.isEmpty && !tab.outcomes.isEmpty) {
                     MessagesView(outcomes: tab.outcomes)
+                } else if stacked {
+                    stackedResults
                 } else if let result = tab.currentResult {
-                    ResultsTable(tab: tab, result: result, filter: tab.showColumnFilter ? tab.columnFilter : "",
-                                 editsVersion: tab.editsVersion, store: store)
-                        .overlay {
-                            if result.rows.isEmpty {
-                                // An empty grid looks like nothing happened, so say so.
-                                VStack(spacing: 4) {
-                                    Text("No rows returned").font(.system(size: 13, weight: .semibold))
-                                    Text("The query ran without errors, but nothing matched.")
-                                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                                }
-                                .padding(.horizontal, 18)
-                                .padding(.vertical, 12)
-                                .background(RoundedRectangle(cornerRadius: 8).fill(Theme.panel))
-                                .allowsHitTesting(false)
-                            }
-                        }
+                    grid(result, index: tab.selectedResult)
                 } else if tab.running {
                     ProgressView("Running…").frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -373,6 +375,82 @@ struct ResultsPanel: View {
             statusLine
         }
         .onChange(of: tab.columnFilterFocus) { filterFocused = true }
+    }
+
+    private func select(_ index: Int) {
+        if tab.selectedResult != index {
+            tab.selectedResult = index
+            tab.selectedRows = []
+        }
+        tab.showMessages = false
+    }
+
+    private func grid(_ result: ResultSet, index: Int, stacked: Bool = false) -> some View {
+        let current = tab.selectedResult == index
+        return ResultsTable(tab: tab, result: result, filter: current && tab.showColumnFilter ? tab.columnFilter : "",
+                            editsVersion: tab.editsVersion, store: store, isCurrent: current,
+                            forwardsScrolling: stacked) { select(index) }
+            .overlay {
+                if result.rows.isEmpty {
+                    // An empty grid looks like nothing happened, so say so.
+                    VStack(spacing: 4) {
+                        Text("No rows returned").font(.system(size: 13, weight: .semibold))
+                        Text("The query ran without errors, but nothing matched.")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Theme.panel))
+                    .allowsHitTesting(false)
+                }
+            }
+    }
+
+    /// Every result one above another: up to three fill the panel, more scroll.
+    private var stackedResults: some View {
+        GeometryReader { geometry in
+            let visible = CGFloat(min(tab.results.count, 3))
+            let height = max(150, (geometry.size.height - visible * 24) / visible)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    VStack(spacing: 0) {
+                        ForEach(Array(tab.results.enumerated()), id: \.element.id) { index, result in
+                            VStack(spacing: 0) {
+                                stackHeader(result, index: index)
+                                grid(result, index: index, stacked: true).frame(height: height)
+                            }
+                            .id(result.id)
+                        }
+                    }
+                }
+                .onChange(of: scrollTarget) {
+                    guard let scrollTarget else { return }
+                    withAnimation { proxy.scrollTo(scrollTarget, anchor: .top) }
+                    self.scrollTarget = nil
+                }
+            }
+        }
+    }
+
+    private func stackHeader(_ result: ResultSet, index: Int) -> some View {
+        let current = tab.selectedResult == index
+        return HStack(spacing: 6) {
+            Text("Result \(index + 1)").fontWeight(.semibold)
+            Text("\(result.totalRows.formatted()) row\(result.totalRows == 1 ? "" : "s")").foregroundStyle(.secondary)
+            Text(result.statement.replacingOccurrences(of: "\n", with: " "))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+        }
+        .font(.system(size: 11))
+        .padding(.horizontal, 10)
+        .frame(height: 24)
+        .background(current ? Theme.selection.opacity(0.55) : Theme.panel)
+        .contentShape(Rectangle())
+        .onTapGesture { select(index) }
+        .help(result.statement)
     }
 
     private func columnFilterBar(_ result: ResultSet) -> some View {
@@ -502,6 +580,11 @@ private struct MessagesView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                             .textSelection(.enabled)
+                        if let note = outcome.note {
+                            Label(note, systemImage: "info.circle")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
                         ForEach(Array(outcome.warningMessages.enumerated()), id: \.offset) { _, message in
                             Label(message, systemImage: "exclamationmark.triangle.fill")
                                 .font(.system(size: 11))

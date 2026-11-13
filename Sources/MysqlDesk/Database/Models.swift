@@ -90,7 +90,7 @@ final class ResultSet: Identifiable {
     /// Changes only when edits are applied to the database.
     private(set) var rows: [[String?]]
     /// Rows the server returned; more than `rows.count` when the result was capped.
-    let totalRows: Int
+    private(set) var totalRows: Int
     let duration: TimeInterval
 
     init(statement: String, columns: [ResultColumn], rows: [[String?]], totalRows: Int, duration: TimeInterval) {
@@ -106,6 +106,12 @@ final class ResultSet: Identifiable {
     /// Records a value written back to the database.
     func setValue(_ value: String?, row: Int, column: Int) {
         rows[row][column] = value
+    }
+
+    /// Drops rows deleted from the database.
+    func removeRows(_ indexes: Set<Int>) {
+        rows = rows.enumerated().filter { !indexes.contains($0.offset) }.map(\.element)
+        totalRows -= indexes.count
     }
 
     /// The source table if every column comes from the same one, for naming exports.
@@ -132,6 +138,8 @@ struct StatementOutcome: Identifiable {
     let warnings: Int
     /// The text of those warnings, from SHOW WARNINGS ("Warning 1292: Truncated incorrect …").
     var warningMessages: [String] = []
+    /// Extra detail for the Messages pane, e.g. that a result was over the limit and isn't shown.
+    var note: String?
     let date = Date()
 
     var isError: Bool {
@@ -170,7 +178,25 @@ struct EditContext {
     /// ENUM options by result column index, for the drop-down.
     let enumOptions: [Int: [String]]
 
-    /// One UPDATE per changed row. `edits` is row → column → new value (nil means NULL).
+    /// One UPDATE per changed row, then one DELETE per deleted row. `edits` is row → column → new value
+    /// (nil means NULL); edits to rows that are being deleted are left out.
+    func statements(for result: ResultSet, edits: [Int: [Int: String?]], deletions: Set<Int>) -> [String] {
+        updates(for: result, edits: edits.filter { !deletions.contains($0.key) }) + deletes(for: result, rows: deletions)
+    }
+
+    func deletes(for result: ResultSet, rows: Set<Int>) -> [String] {
+        rows.sorted().map { row in
+            "DELETE FROM \(SQL.identifier(schema)).\(SQL.identifier(table))\nWHERE \(conditions(for: result.rows[row], in: result)) LIMIT 1;"
+        }
+    }
+
+    /// The WHERE clause that finds a row by its primary key, using the values the server returned.
+    private func conditions(for original: [String?], in result: ResultSet) -> String {
+        keyColumns.map { column in
+            "\(SQL.identifier(result.columns[column].orgName)) = \(Exporter.sqlValue(original[column], kind: result.columns[column].kind))"
+        }.joined(separator: " AND ")
+    }
+
     func updates(for result: ResultSet, edits: [Int: [Int: String?]]) -> [String] {
         edits.keys.sorted().compactMap { row in
             guard let changes = edits[row], !changes.isEmpty else { return nil }
@@ -179,11 +205,8 @@ struct EditContext {
                 let value = changes[column] ?? nil
                 return "\(SQL.identifier(result.columns[column].orgName)) = \(Exporter.sqlValue(value, kind: result.columns[column].kind))"
             }
-            let conditions = keyColumns.map { column in
-                "\(SQL.identifier(result.columns[column].orgName)) = \(Exporter.sqlValue(original[column], kind: result.columns[column].kind))"
-            }
             return "UPDATE \(SQL.identifier(schema)).\(SQL.identifier(table))\nSET \(assignments.joined(separator: ", "))\n"
-                + "WHERE \(conditions.joined(separator: " AND ")) LIMIT 1;"
+                + "WHERE \(conditions(for: original, in: result)) LIMIT 1;"
         }
     }
 

@@ -185,6 +185,34 @@ final class EditorBridge: NSObject, NSTextViewDelegate {
         replace(range, with: SQL.format(source))
     }
 
+    /// ⌥⇧↑ / ⌥⇧↓, as in VS Code: copies the current line (or the lines a multi-line selection touches)
+    /// above or below. A selection inside one line is copied on its own, straight after (or before) itself.
+    /// The cursor moves with the copy going down and stays put going up.
+    func duplicate(down: Bool) {
+        let text = textView.string as NSString
+        let selection = textView.selectedRange()
+        let lines = text.lineRange(for: selection)
+        let block = text.substring(with: lines)
+
+        let selectedText = text.substring(with: selection)
+        let wholeLines = selection.location == lines.location && selection.length >= block.trimmingCharacters(in: .newlines).utf16.count
+        if selection.length > 0, !selectedText.contains(where: \.isNewline), !wholeLines {
+            // Part of one line: duplicate just the selected text.
+            replace(NSRange(location: NSMaxRange(selection), length: 0), with: selectedText)
+            if down { textView.setSelectedRange(NSRange(location: NSMaxRange(selection), length: selection.length)) }
+            else { textView.setSelectedRange(selection) }
+            return
+        }
+
+        // The last line has no newline of its own, so the copy brings one.
+        let endsWithNewline = block.hasSuffix("\n")
+        let copy = endsWithNewline ? block : (down ? "\n" + block : block + "\n")
+        replace(NSRange(location: down ? NSMaxRange(lines) : lines.location, length: 0), with: copy)
+        let shift = down ? (copy as NSString).length : 0
+        textView.setSelectedRange(NSRange(location: selection.location + shift, length: selection.length))
+        textView.scrollRangeToVisible(textView.selectedRange())
+    }
+
     private func replace(_ range: NSRange, with text: String) {
         guard textView.shouldChangeText(in: range, replacementString: text) else { return }
         textView.textStorage?.replaceCharacters(in: range, with: text)
@@ -192,8 +220,19 @@ final class EditorBridge: NSObject, NSTextViewDelegate {
     }
 }
 
-/// Plain-text SQL editing: tab inserts spaces and new lines keep the current indent.
+/// Plain-text SQL editing: tab inserts spaces, new lines keep the current indent,
+/// and ⌥⇧↑ / ⌥⇧↓ duplicate the line or selection.
 final class SQLTextView: NSTextView {
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.numericPad, .function])
+        let arrow = event.specialKey == .upArrow ? false : event.specialKey == .downArrow ? true : nil
+        if modifiers == [.option, .shift], let down = arrow, let bridge = delegate as? EditorBridge {
+            MainActor.assumeIsolated { bridge.duplicate(down: down) }
+            return
+        }
+        super.keyDown(with: event)
+    }
+
     override func insertTab(_ sender: Any?) {
         insertText("    ", replacementRange: selectedRange())
     }

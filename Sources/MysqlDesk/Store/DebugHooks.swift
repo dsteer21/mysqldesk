@@ -8,6 +8,7 @@ import Foundation
 /// - `MYSQLDESK_AUTORUN=1` connects the servers the open tabs use, opens the selected tab's schema in the
 ///   sidebar and runs the tab. Prints `MYSQLDESK_AUTORUN_FAILED` if a connection fails. Then, optionally:
 ///   - `MYSQLDESK_DEMO_EDITS="5=New note;3=paid"` makes pending edits: the nth `column=value` goes in row n.
+///   - `MYSQLDESK_DEMO_DELETE="2,4"` marks those rows (counting from 1) for deletion.
 ///   - `MYSQLDESK_DEMO_PREVIEW=1` then opens the Apply preview.
 ///   - `MYSQLDESK_COLUMN_FILTER=text` fills in the ⌘B column filter.
 ///   - `MYSQLDESK_PALETTE=text` opens ⌘P and types that text.
@@ -41,12 +42,16 @@ enum DebugHooks {
         store.run(tab, .all)
         while tab.running || tab.outcomes.isEmpty { try? await Task.sleep(for: .milliseconds(100)) }
 
-        if let spec = environment["MYSQLDESK_DEMO_EDITS"], let result = tab.currentResult,
+        if environment["MYSQLDESK_DEMO_EDITS"] != nil || environment["MYSQLDESK_DEMO_DELETE"] != nil, let result = tab.currentResult,
            case .success = await store.editContext(for: tab, result: result) {
-            for (row, edit) in spec.split(separator: ";").enumerated() {
+            for (row, edit) in (environment["MYSQLDESK_DEMO_EDITS"] ?? "").split(separator: ";").enumerated() {
                 let parts = edit.split(separator: "=", maxSplits: 1).map(String.init)
                 guard parts.count == 2, let column = Int(parts[0]), row < result.rows.count else { continue }
                 tab.setEdit(parts[1], row: row, column: column, in: result)
+            }
+            if let rows = environment["MYSQLDESK_DEMO_DELETE"] {
+                let marked = rows.split(separator: ",").compactMap { Int($0) }.map { $0 - 1 }.filter(result.rows.indices.contains)
+                tab.toggleDeletion(rows: marked, in: result)
             }
             if environment["MYSQLDESK_DEMO_PREVIEW"] != nil { store.previewEdits(tab) }
         }
@@ -189,6 +194,28 @@ enum SelfTest {
         editor.textView.setSelectedRange(NSRange(location: 0, length: 0))
         editor.format()
         check("format works on the whole editor", text() == "SELECT 1;\n\nSELECT 2;\n\nSELECT 3;", text())
+
+        // ⌥⇧↓ / ⌥⇧↑ duplicate the line, a multi-line selection's lines, or a selection within one line.
+        editor.load("a1\nb2\nc3")
+        editor.textView.setSelectedRange(NSRange(location: 4, length: 0)) // in "b2"
+        editor.duplicate(down: true)
+        check("⌥⇧↓ copies the line below", text() == "a1\nb2\nb2\nc3" && editor.cursor == 7, "\(text()) @\(editor.cursor)")
+        editor.duplicate(down: false)
+        check("⌥⇧↑ copies the line above, cursor stays", text() == "a1\nb2\nb2\nb2\nc3" && editor.cursor == 7, "\(text()) @\(editor.cursor)")
+        editor.load("a1\nb2\nc3")
+        editor.textView.setSelectedRange(NSRange(location: 7, length: 0)) // end of the last line, no newline
+        editor.duplicate(down: true)
+        check("last line copies with a new line", text() == "a1\nb2\nc3\nc3" && editor.cursor == 10, "\(text()) @\(editor.cursor)")
+        editor.load("a1\nb2\nc3")
+        editor.textView.setSelectedRange(NSRange(location: 1, length: 3)) // "1\nb" across two lines
+        editor.duplicate(down: true)
+        check("multi-line selection copies its lines", text() == "a1\nb2\na1\nb2\nc3"
+              && editor.textView.selectedRange() == NSRange(location: 7, length: 3), "\(text()) \(editor.textView.selectedRange())")
+        editor.load("select abc from t")
+        editor.textView.setSelectedRange(NSRange(location: 7, length: 3)) // "abc"
+        editor.duplicate(down: true)
+        check("selection within a line copies just the selection", text() == "select abcabc from t"
+              && editor.textView.selectedRange() == NSRange(location: 10, length: 3), "\(text()) \(editor.textView.selectedRange())")
     }
 
     /// Editing through the store, as the grid does: needs MYSQLDESK_TEST_PASSWORD so no Keychain is used.
@@ -267,6 +294,44 @@ enum SelfTest {
         let failed = await runTab("SELECT * FROM no_such_table")
         check("error shown in Messages", failed.showMessages && failed.outcomes.first?.isError == true
               && failed.outcomes.first?.summary.contains("1146") == true, failed.outcomes.first?.summary ?? "")
+
+        // Deleting rows: marked, previewed as DELETEs after the UPDATEs, then gone from the grid and the table.
+        let deleting = await runTab("SELECT id, name FROM items ORDER BY id")
+        if let result = deleting.currentResult, case .success = await store.editContext(for: deleting, result: result) {
+            deleting.setEdit("Renamed again", row: 0, column: 1, in: result)
+            deleting.setEdit("Doomed", row: 2, column: 1, in: result) // dropped: the row is being deleted
+            deleting.toggleDeletion(rows: [2], in: result)
+            check("deleted row counted as a change", deleting.editCount == 3 && deleting.isDeleted(row: 2, in: result), "\(deleting.editCount)")
+            deleting.toggleDeletion(rows: [1, 2], in: result) // not all marked: marks both
+            deleting.toggleDeletion(rows: [1], in: result) // all marked: unmarks
+            store.previewEdits(deleting)
+            let statements = store.applyPreview?.statements ?? []
+            check("preview: UPDATE, then DELETE by key", statements.count == 2 && statements[0].hasPrefix("UPDATE")
+                  && statements[1] == "DELETE FROM `mysqldesk_selftest`.`items`\nWHERE `id` = 3 LIMIT 1;", "\(statements)")
+            if let preview = store.applyPreview { await store.applyEdits(preview) }
+            check("deleted row leaves the grid", result.rows.count == 2 && result.totalRows == 2 && deleting.editCount == 0,
+                  "\(result.rows.count)")
+            let remaining = await runTab("SELECT id FROM items ORDER BY id")
+            check("row deleted from the table", remaining.currentResult?.rows.map { $0[0] } == ["1", "2"],
+                  "\(String(describing: remaining.currentResult?.rows))")
+        } else {
+            check("delete checks", false, "result not editable")
+        }
+
+        // Run All keeps up to ten result grids; the rest are still run and listed in Messages.
+        let many = await runTab((1...12).map { "SELECT \($0) AS n;" }.joined(separator: "\n"))
+        check("at most 10 result grids", many.results.count == AppStore.maxResultSets && many.outcomes.count == 12
+              && many.outcomes.last?.note != nil && many.results.last?.rows.first?.first == "10",
+              "\(many.results.count) results, \(many.outcomes.count) outcomes")
+
+        // A .sql file opens in a new tab with no connection, for the user to choose one.
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("mysqldesk-selftest.sql")
+        try? "SELECT 'from a file';\n".write(to: file, atomically: true, encoding: .utf8)
+        store.open([file])
+        let opened = store.selectedTab
+        check("opened .sql file", opened?.title == "mysqldesk-selftest" && opened?.sql == "SELECT 'from a file';\n"
+              && opened?.connectionID == nil, "\(opened?.title ?? "none")")
+        try? FileManager.default.removeItem(at: file)
 
         let join = await runTab("SELECT a.id, b.name FROM items a JOIN items b ON b.id = a.id")
         if let result = join.currentResult, case .failure(let error) = await store.editContext(for: join, result: result) {

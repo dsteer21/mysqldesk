@@ -11,6 +11,7 @@ struct MysqlDeskApp: App {
                 .environment(store)
                 .frame(minWidth: 1000, minHeight: 600)
                 .preferredColorScheme(.dark)
+                .task { appDelegate.attach(store) }
                 #if DEBUG
                 .task { await DebugHooks.run(store) }
                 #endif
@@ -32,6 +33,8 @@ struct MysqlDeskApp: App {
         CommandGroup(replacing: .newItem) {
             Button("New Query Tab") { store.newTab() }
                 .keyboardShortcut("t")
+            Button("Open SQL File…") { store.showOpenPanel() }
+                .keyboardShortcut("o")
             Button("Manage Connections…") { store.showManager() }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
             Button("Connections Home") { store.showHome.toggle() }
@@ -129,6 +132,23 @@ struct MysqlDeskApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private weak var store: AppStore?
+    /// Files opened before the window (and its store) is ready, e.g. a .sql file dropped on the Dock icon to launch the app.
+    private var pendingURLs: [URL] = []
+
+    @MainActor func attach(_ store: AppStore) {
+        self.store = store
+        if !pendingURLs.isEmpty {
+            store.open(pendingURLs)
+            pendingURLs = []
+        }
+    }
+
+    /// .sql files dropped on the app icon or opened from Finder (Info.plist declares the type).
+    @MainActor func application(_ application: NSApplication, open urls: [URL]) {
+        if let store { store.open(urls) } else { pendingURLs += urls }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Needed when launched as a bare executable (`swift run`) rather than from the .app bundle.
         NSApp.setActivationPolicy(.regular)

@@ -4,7 +4,7 @@
 set -euo pipefail
 
 cd "${0:A:h}/.."
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-$(<VERSION)}"
 DMG="build/MysqlDesk-${VERSION}.dmg"
 STAGING="build/dmg"
 

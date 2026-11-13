@@ -4,7 +4,8 @@ import SwiftUI
 /// The results grid. AppKit's NSTableView copes with thousands of rows and hundreds of columns
 /// far better than a SwiftUI Table. Click a header to sort; the column filter (⌘B) hides
 /// columns whose names don't match. Double-click a cell to edit it (ENUMs get a drop-down);
-/// changes stay pending, highlighted, until Apply or Revert.
+/// changes stay pending, highlighted, until Apply or Revert. ⌫ (or right-click ▸ Delete) marks
+/// the selected rows for deletion, also pending until Apply.
 struct ResultsTable: NSViewRepresentable {
     let tab: QueryTab
     let result: ResultSet
@@ -12,6 +13,12 @@ struct ResultsTable: NSViewRepresentable {
     /// Passed in so SwiftUI updates the grid whenever an edit is made or reverted.
     let editsVersion: Int
     let store: AppStore
+    /// False for the other grids when several results are stacked; their selection is cleared.
+    var isCurrent = true
+    /// When stacked inside another scroll view: scrolling past the top or bottom of this grid moves that one.
+    var forwardsScrolling = false
+    /// Makes this grid's result the current one (for export, copy and the status line) when it's used.
+    var activate: () -> Void = {}
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -36,7 +43,7 @@ struct ResultsTable: NSViewRepresentable {
         menu.delegate = context.coordinator
         table.menu = menu
 
-        let scrollView = NSScrollView()
+        let scrollView = ResultsScrollView()
         scrollView.documentView = table
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
@@ -49,10 +56,15 @@ struct ResultsTable: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.tab = tab
         coordinator.store = store
+        coordinator.activate = activate
+        (scrollView as? ResultsScrollView)?.forwardsScrolling = forwardsScrolling
         if coordinator.result !== result {
             coordinator.load(result)
             coordinator.filter = nil
+        } else if coordinator.rowCount != result.rows.count {
+            coordinator.reloadRows() // rows were deleted
         }
+        if !isCurrent { coordinator.clearSelection() }
         if coordinator.filter != filter {
             coordinator.applyFilter(filter)
         }
@@ -70,6 +82,9 @@ struct ResultsTable: NSViewRepresentable {
         var result: ResultSet?
         var filter: String?
         var editsVersion = -1
+        var activate: () -> Void = {}
+        /// Set while the selection is changed from code, so it isn't taken as the user choosing this grid.
+        private var syncingSelection = false
         /// The cell being edited in place, and whether Esc cancelled it.
         private var editing: (row: Int, column: Int)?
         private var editCancelled = false
@@ -114,6 +129,26 @@ struct ResultsTable: NSViewRepresentable {
             table.scrollColumnToVisible(0)
         }
 
+        var rowCount: Int { order.count }
+
+        /// After rows are deleted: show the remaining rows, keeping the current sort.
+        func reloadRows() {
+            guard let result, let table else { return }
+            order = Array(result.rows.indices)
+            sortRows()
+            syncingSelection = true
+            table.reloadData()
+            table.deselectAll(nil)
+            syncingSelection = false
+        }
+
+        func clearSelection() {
+            guard let table, !table.selectedRowIndexes.isEmpty else { return }
+            syncingSelection = true
+            table.deselectAll(nil)
+            syncingSelection = false
+        }
+
         func applyFilter(_ text: String) {
             guard let table, let result else { return }
             filter = text
@@ -146,18 +181,34 @@ struct ResultsTable: NSViewRepresentable {
             guard let result, let tableColumn, order.indices.contains(row) else { return nil }
             let field = (tableView.makeView(withIdentifier: Self.cellID, owner: nil) as? NSTextField) ?? makeField()
 
+            // Rows marked for deletion are tinted red and struck through until Apply or Revert.
+            let deleted = tab?.isDeleted(row: order[row], in: result) == true
+            defer {
+                if deleted {
+                    let paragraph = NSMutableParagraphStyle()
+                    paragraph.alignment = field.alignment
+                    paragraph.lineBreakMode = .byTruncatingTail
+                    field.attributedStringValue = NSAttributedString(string: field.stringValue, attributes: [
+                        .strikethroughStyle: NSUnderlineStyle.single.rawValue, .font: field.font ?? cellFont,
+                        .foregroundColor: NSColor.systemRed.withAlphaComponent(0.85), .paragraphStyle: paragraph,
+                    ])
+                }
+            }
             if tableColumn.identifier == Self.rowNumberID {
                 field.stringValue = "\(row + 1)"
                 field.font = cellFont
                 field.textColor = .tertiaryLabelColor
                 field.alignment = .right
+                field.drawsBackground = deleted
+                field.backgroundColor = deleted ? NSColor.systemRed.withAlphaComponent(0.22) : .clear
                 return field
             }
             let index = Int(tableColumn.identifier.rawValue.dropFirst()) ?? 0
             let column = result.columns[index]
             let edited = tab?.isEdited(row: order[row], column: index, in: result) == true
-            field.drawsBackground = edited
-            field.backgroundColor = edited ? NSColor.systemOrange.withAlphaComponent(0.28) : .clear
+            field.drawsBackground = edited || deleted
+            field.backgroundColor = deleted ? NSColor.systemRed.withAlphaComponent(0.22)
+                : edited ? NSColor.systemOrange.withAlphaComponent(0.28) : .clear
             if let value = tab?.value(row: order[row], column: index, in: result) ?? result.rows[order[row]][index] {
                 // One line per cell: long values are cut short and new lines shown as ⏎.
                 var text = value.count > 400 ? String(value.prefix(400)) + "…" : value
@@ -184,10 +235,16 @@ struct ResultsTable: NSViewRepresentable {
         }
 
         func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
-            guard let result, let descriptor = tableView.sortDescriptors.first, let key = descriptor.key, let index = Int(key) else { return }
+            let selected = Set(tableView.selectedRowIndexes.map { order[$0] })
+            sortRows()
+            tableView.reloadData()
+            tableView.selectRowIndexes(IndexSet(order.indices.filter { selected.contains(order[$0]) }), byExtendingSelection: false)
+        }
+
+        private func sortRows() {
+            guard let result, let table, let descriptor = table.sortDescriptors.first, let key = descriptor.key, let index = Int(key) else { return }
             let numeric = result.columns[index].kind == .number
             let rows = result.rows
-            let selected = Set(tableView.selectedRowIndexes.map { order[$0] })
             order.sort { a, b in
                 let ordered: Bool
                 switch (rows[a][index], rows[b][index]) {
@@ -204,12 +261,11 @@ struct ResultsTable: NSViewRepresentable {
                 }
                 return descriptor.ascending ? ordered : !ordered
             }
-            tableView.reloadData()
-            tableView.selectRowIndexes(IndexSet(order.indices.filter { selected.contains(order[$0]) }), byExtendingSelection: false)
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
-            guard let table else { return }
+            guard let table, !syncingSelection else { return }
+            if !table.selectedRowIndexes.isEmpty { activate() }
             tab?.selectedRows = table.selectedRowIndexes.map { order[$0] }
         }
 
@@ -223,14 +279,15 @@ struct ResultsTable: NSViewRepresentable {
         // MARK: Editing
 
         /// Checks the result can be edited (loading its table details the first time), then calls `body`.
-        private func withContext(column index: Int, _ body: @escaping (EditContext, ResultSet, QueryTab) -> Void) {
+        /// Pass a column to check that column can be changed too.
+        private func withContext(column index: Int? = nil, _ body: @escaping (EditContext, ResultSet, QueryTab) -> Void) {
             guard let tab, let store, let result else { return }
             Task { @MainActor in
                 switch await store.editContext(for: tab, result: result) {
                 case .failure(let error):
                     Banner.shared.error("These results can't be edited", detail: error.message)
                 case .success(let context):
-                    guard context.editable.contains(index) else {
+                    if let index, !context.editable.contains(index) {
                         Banner.shared.error("“\(result.columns[index].name)” can't be edited",
                                             detail: "It's calculated, binary, or from another table.")
                         return
@@ -325,6 +382,17 @@ struct ResultsTable: NSViewRepresentable {
             return Int(identifier.rawValue.dropFirst())
         }
 
+        /// ⌫ or right-click ▸ Delete: marks the selected rows for deletion (or unmarks them if they all are).
+        /// Nothing is deleted until Apply, which previews the DELETE statements.
+        func toggleDeletion() {
+            guard let table else { return }
+            let rows = table.selectedRowIndexes.map { order[$0] }
+            guard !rows.isEmpty else { return }
+            withContext { _, result, tab in
+                tab.toggleDeletion(rows: rows, in: result)
+            }
+        }
+
         /// ⌘C: selected rows as tab-separated text.
         func copyRows() {
             store?.copy(tab, as: nil)
@@ -366,6 +434,14 @@ struct ResultsTable: NSViewRepresentable {
                 menu.addItem(item("Copy Column Name") { Self.setPasteboard(result.columns[index].name) })
                 menu.addItem(.separator())
             }
+            if hasSelection, let tab {
+                let rows = table.selectedRowIndexes.map { order[$0] }
+                let allMarked = rows.allSatisfy { tab.isDeleted(row: $0, in: result) }
+                let title = rows.count == 1 ? (allMarked ? "Restore Row" : "Delete Row")
+                    : (allMarked ? "Restore \(rows.count) Selected Rows" : "Delete \(rows.count) Selected Rows")
+                menu.addItem(item(title) { [weak self] in self?.toggleDeletion() })
+                menu.addItem(.separator())
+            }
             if hasSelection {
                 menu.addItem(item("Copy Rows") { [weak self] in self?.store?.copy(self?.tab, as: nil) })
                 for format in ExportFormat.allCases {
@@ -400,9 +476,25 @@ struct ResultsTable: NSViewRepresentable {
     }
 }
 
-/// Lets ⌘C (Edit ▸ Copy) copy the selected rows.
+/// Lets ⌘C (Edit ▸ Copy) copy the selected rows, and ⌫ mark them for deletion.
 final class ResultsTableView: NSTableView {
     weak var coordinator: ResultsTable.Coordinator?
+
+    override func keyDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if modifiers.isEmpty, event.specialKey == .delete || event.specialKey == .deleteForward {
+            MainActor.assumeIsolated { coordinator?.toggleDeletion() }
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    /// Clicking into a grid makes it the current result, even before a row is selected.
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { MainActor.assumeIsolated { coordinator?.activate() } }
+        return accepted
+    }
 
     @objc func copy(_ sender: Any?) {
         MainActor.assumeIsolated { coordinator?.copyRows() }
@@ -411,6 +503,25 @@ final class ResultsTableView: NSTableView {
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
         if item.action == #selector(copy(_:)) { return !selectedRowIndexes.isEmpty }
         return super.validateUserInterfaceItem(item)
+    }
+}
+
+/// Passes vertical scrolling on to the enclosing scroll view once the grid can't scroll any further,
+/// so a stack of grids scrolls as one page instead of trapping the scroll wheel.
+final class ResultsScrollView: NSScrollView {
+    var forwardsScrolling = false
+
+    override func scrollWheel(with event: NSEvent) {
+        if forwardsScrolling, abs(event.scrollingDeltaY) > abs(event.scrollingDeltaX), let document = documentView {
+            let visible = contentView.bounds
+            let atTop = visible.minY <= 0
+            let atBottom = visible.maxY >= document.frame.height - 1
+            if (event.scrollingDeltaY > 0 && atTop) || (event.scrollingDeltaY < 0 && atBottom) {
+                nextResponder?.scrollWheel(with: event)
+                return
+            }
+        }
+        super.scrollWheel(with: event)
     }
 }
 
