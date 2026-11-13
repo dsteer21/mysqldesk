@@ -14,6 +14,7 @@ import Foundation
 ///   - `MYSQLDESK_PALETTE=text` opens ⌘P and types that text.
 /// - `MYSQLDESK_OPEN=manager` opens Manage Connections.
 /// - `MYSQLDESK_SNAPSHOT=/tmp/shot.png` saves the window (or its open sheet) to a PNG after a few seconds, then quits.
+///   `MYSQLDESK_WINDOW_SIZE=1440x900` resizes the window first; `MYSQLDESK_SNAPSHOT_SCALE=2` saves it at Retina size.
 /// - `MYSQLDESK_SELFTEST=host:port:user[:password]` runs driver/SQL/export checks against a
 ///   disposable server and prints PASS/FAIL. It creates and drops a `mysqldesk_selftest` schema.
 @MainActor
@@ -69,10 +70,20 @@ enum DebugHooks {
     static func scheduleSnapshotIfRequested() {
         guard let path = environment["MYSQLDESK_SNAPSHOT"] else { return }
         let delay = Double(environment["MYSQLDESK_SNAPSHOT_DELAY"] ?? "") ?? 5
+        let scale = Double(environment["MYSQLDESK_SNAPSHOT_SCALE"] ?? "") ?? 1
+        if let size = environment["MYSQLDESK_WINDOW_SIZE"]?.split(separator: "x").compactMap({ Double($0) }), size.count == 2 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                NSApp.windows.first { $0.isVisible && $0.contentView != nil }?.setContentSize(NSSize(width: size[0], height: size[1]))
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             let main = NSApp.windows.first { $0.isVisible && $0.contentView != nil }
             guard let view = (main?.attachedSheet ?? main)?.contentView,
-                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+                  let rep = scale == 1 ? view.bitmapImageRepForCachingDisplay(in: view.bounds) : NSBitmapImageRep(
+                      bitmapDataPlanes: nil, pixelsWide: Int(view.bounds.width * scale), pixelsHigh: Int(view.bounds.height * scale),
+                      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                      bytesPerRow: 0, bitsPerPixel: 0) else { return }
+            rep.size = view.bounds.size
             view.cacheDisplay(in: view.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
             // exit rather than terminate: an open sheet would block a normal quit.

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Entitlements for the Mac App Store build (scripts/build-appstore.sh). The GitHub build isn't sandboxed. -->
+<plist version="1.0">
+<dict>
+    <!-- Every Mac App Store app runs in the App Sandbox. -->
+    <key>com.apple.security.app-sandbox</key><true/>
+    <!-- Connecting to MySQL servers. -->
+    <key>com.apple.security.network.client</key><true/>
+    <!-- Opening .sql files and saving exports that the user picks or drops. -->
+    <key>com.apple.security.files.user-selected.read-write</key><true/>
+    <!-- Must match the provisioning profile: team ID + bundle ID. -->
+    <key>com.apple.application-identifier</key><string>QDJSGQL363.uk.co.dave-steer.mysqldesk</string>
+    <key>com.apple.developer.team-identifier</key><string>QDJSGQL363</string>
+</dict>
+</plist>

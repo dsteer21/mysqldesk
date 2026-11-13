@@ -65,6 +65,7 @@ Requires macOS 14+ and Xcode (or the Swift toolchain).
 ./scripts/build-app.sh --install  # also copies it to /Applications
 ./scripts/make-dmg.sh             # builds build/MysqlDesk-<version>.dmg for other Macs
 ./scripts/release.sh              # tags the pushed HEAD and uploads the DMG to GitHub Releases
+./scripts/build-appstore.sh       # builds the sandboxed Mac App Store package (see docs/app-store.md)
 ```
 
 The version number lives in `VERSION`; change it (and commit) before releasing.
@@ -83,7 +84,11 @@ Debug builds (`swift build`) include these; release builds compile them out:
 
 - `MYSQLDESK_SELFTEST=host:port:user:password swift run` — checks the driver (types, binary data, NULLs, UTF-8, affected rows, errors, row cap, `KILL QUERY`, per-tab sessions), the SQL splitter and formatter, the CSV/JSON/SQL exporters and, with `MYSQLDESK_TEST_PASSWORD` set to the same password, editing (ENUM options, UPDATE and DELETE preview, apply, rollback on error, read-only joins), the 10-result limit, opening .sql files and line duplication, then prints PASS/FAIL. It creates and drops a `mysqldesk_selftest` schema, so **only point it at a disposable server**, e.g. `docker run -e MYSQL_ROOT_PASSWORD=x -p 33084:3306 mysql:8.4`. Add `MYSQLDESK_SELFTEST_TLS=off` to test without TLS.
 - `MYSQLDESK_DATA_DIR=/tmp/x` — use another data folder; `MYSQLDESK_TEST_PASSWORD=…` — answer password lookups without touching the Keychain.
-- `MYSQLDESK_AUTORUN=1` connects every saved connection and runs the selected tab (then `MYSQLDESK_DEMO_EDITS`, `MYSQLDESK_DEMO_DELETE="2,4"` and `MYSQLDESK_DEMO_PREVIEW=1` make pending changes for screenshots); `MYSQLDESK_SNAPSHOT=/tmp/shot.png` saves the window (or its open sheet) to a PNG, then quits.
+- `MYSQLDESK_AUTORUN=1` connects every saved connection and runs the selected tab (then `MYSQLDESK_DEMO_EDITS`, `MYSQLDESK_DEMO_DELETE="2,4"` and `MYSQLDESK_DEMO_PREVIEW=1` make pending changes for screenshots); `MYSQLDESK_SNAPSHOT=/tmp/shot.png` saves the window (or its open sheet) to a PNG, then quits (`MYSQLDESK_WINDOW_SIZE=1440x900` and `MYSQLDESK_SNAPSHOT_SCALE=2` for App Store screenshots).
+
+### Mac App Store
+
+MysqlDesk is also sold on the Mac App Store as a sandboxed build of the same code. Setup, each release's steps, the listing text and the sandbox differences are in [docs/app-store.md](docs/app-store.md).
 
 ## Data
 
