@@ -71,6 +71,17 @@ struct ConnectionManager: View {
             .padding(12)
         }
         .frame(width: 860, height: 520)
+        #if DEBUG
+        // Presses New, Test Connection or Close for the App Review video (DemoTour).
+        .onReceive(NotificationCenter.default.publisher(for: .debugManagerAction)) { note in
+            switch note.object as? String {
+            case "new": add(ConnectionConfig())
+            case "test": test()
+            case "close": dismiss()
+            default: break
+            }
+        }
+        #endif
         // A password typed but not yet saved is stored when you switch connection or close the window.
         .onChange(of: store.managerSelection) { previous, _ in
             storePendingPassword(for: previous)
@@ -214,6 +225,19 @@ private struct ConnectionForm: View {
             }
         }
         .formStyle(.grouped)
+        #if DEBUG
+        // Fills in a field for the App Review video (DemoTour).
+        .onReceive(NotificationCenter.default.publisher(for: .debugFormField)) { note in
+            guard let value = note.userInfo?["value"] as? String else { return }
+            switch note.object as? String {
+            case "name": config.name = value
+            case "host": config.host = value
+            case "port": config.port = Int(value) ?? config.port
+            case "user": config.username = value
+            default: break
+            }
+        }
+        #endif
         .onAppear {
             config = store.config(id) ?? ConnectionConfig()
             hasPassword = Keychain.hasPassword(for: id)

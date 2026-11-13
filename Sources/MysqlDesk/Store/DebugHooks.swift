@@ -15,6 +15,7 @@ import Foundation
 /// - `MYSQLDESK_OPEN=manager` opens Manage Connections.
 /// - `MYSQLDESK_SNAPSHOT=/tmp/shot.png` saves the window (or its open sheet) to a PNG after a few seconds, then quits.
 ///   `MYSQLDESK_WINDOW_SIZE=1440x900` resizes the window first; `MYSQLDESK_SNAPSHOT_SCALE=2` saves it at Retina size.
+/// - `MYSQLDESK_DEMO_TOUR` and `MYSQLDESK_RECORD` play and record the App Review video (see DemoTour.swift).
 /// - `MYSQLDESK_SELFTEST=host:port:user[:password]` runs driver/SQL/export checks against a
 ///   disposable server and prints PASS/FAIL. It creates and drops a `mysqldesk_selftest` schema.
 @MainActor
@@ -25,6 +26,10 @@ enum DebugHooks {
         if let spec = environment["MYSQLDESK_SELFTEST"] {
             let passed = await SelfTest.run(spec)
             exit(passed ? 0 : 1)
+        }
+        if let spec = environment["MYSQLDESK_DEMO_TOUR"] {
+            await DemoTour.run(store, spec: spec)
+            return
         }
         if environment["MYSQLDESK_OPEN"] == "manager" {
             store.showManager(selecting: store.connections.first?.id)
@@ -68,14 +73,18 @@ enum DebugHooks {
     }
 
     static func scheduleSnapshotIfRequested() {
-        guard let path = environment["MYSQLDESK_SNAPSHOT"] else { return }
-        let delay = Double(environment["MYSQLDESK_SNAPSHOT_DELAY"] ?? "") ?? 5
-        let scale = Double(environment["MYSQLDESK_SNAPSHOT_SCALE"] ?? "") ?? 1
         if let size = environment["MYSQLDESK_WINDOW_SIZE"]?.split(separator: "x").compactMap({ Double($0) }), size.count == 2 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                 NSApp.windows.first { $0.isVisible && $0.contentView != nil }?.setContentSize(NSSize(width: size[0], height: size[1]))
             }
         }
+        // After the resize, so every frame is the same size.
+        if let folder = environment["MYSQLDESK_RECORD"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { Recorder.start(to: folder) }
+        }
+        guard let path = environment["MYSQLDESK_SNAPSHOT"] else { return }
+        let delay = Double(environment["MYSQLDESK_SNAPSHOT_DELAY"] ?? "") ?? 5
+        let scale = Double(environment["MYSQLDESK_SNAPSHOT_SCALE"] ?? "") ?? 1
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             let main = NSApp.windows.first { $0.isVisible && $0.contentView != nil }
             guard let view = (main?.attachedSheet ?? main)?.contentView,
@@ -94,6 +103,8 @@ enum DebugHooks {
 
 extension Notification.Name {
     static let debugOpenPalette = Notification.Name("MysqlDesk.debugOpenPalette")
+    static let debugManagerAction = Notification.Name("MysqlDesk.debugManagerAction")
+    static let debugFormField = Notification.Name("MysqlDesk.debugFormField")
 }
 
 /// Checks the parts that talk to MySQL, plus the pure SQL/export helpers.

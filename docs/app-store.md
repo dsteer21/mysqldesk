@@ -40,7 +40,7 @@ MYSQLDESK_TEST_PASSWORD=… MYSQLDESK_SELFTEST="127.0.0.1:33084:root:…" build/
 | Name (30) | MysqlDesk |
 | Subtitle (30) | Fast, native MySQL client |
 | Category | Developer Tools (secondary: Productivity) |
-| Price | £1.99 (Pricing and Availability → choose the £1.99 UK price; other countries follow) |
+| Price | £2.99, UK as the base country (other countries follow automatically; you receive £2.11 per UK sale) |
 | Support URL | https://www.dave-steer.co.uk/mysqldesk/ |
 | Marketing URL | https://www.dave-steer.co.uk/mysqldesk/ |
 | Privacy Policy URL | https://www.dave-steer.co.uk/mysqldesk/privacy.html |
@@ -86,9 +86,9 @@ MYSQLDESK_TEST_PASSWORD=… MYSQLDESK_SELFTEST="127.0.0.1:33084:root:…" build/
 > MysqlDesk collects no data: it talks only to the servers you add.
 
 **Notes for App Review:**
-> MysqlDesk is a client for the user's own MySQL or MariaDB servers, so it needs a database server to connect to. To test it: [demo server details or a link to a screen recording]. Press ⇧⌘C (Manage Connections), add the server, click Test Connection, then double-click it in the sidebar to connect. The app collects no data and makes no network connections other than to servers the user adds.
+> MysqlDesk is a client for the user's own MySQL or MariaDB servers, so it needs a database server to connect to. The attached video shows the full flow against a local test server with made-up data. To try it yourself, any MySQL or MariaDB server works, for example `docker run -e MYSQL_ROOT_PASSWORD=test -p 3306:3306 mysql:8.4`. Press ⇧⌘C (Manage Connections), add the server, click Test Connection, then double-click it in the sidebar to connect. The app collects no data and makes no network connections other than to servers the user adds.
 
-App Review usually asks for a working way to test apps like this. Either give them a read-only demo database they can reach over the internet, or a short screen recording of the app connecting and running queries.
+App Review usually asks for a working way to test apps like this, so version 1.3.1 was submitted with a 43-second walk-through video as the review attachment. Make it with `~/Sites/dave-steer/website-files/mysqldesk/scripts/take-screenshots.sh --video` (Docker and ffmpeg): it plays a scripted tour against a throwaway server with made-up data and saves `build/app-review-demo.mp4`. Only the app's own window is recorded, never the screen.
 
 ## Possible review issues
 
