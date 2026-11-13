@@ -9,6 +9,7 @@ import Security
 /// certificate each time (see scripts/build-app.sh); an ad-hoc signature changes with every build.
 @MainActor
 enum Keychain {
+    /// The app's original bundle ID, kept after the move to uk.co.dave-steer.mysqldesk so saved passwords are still found.
     private static let service = "uk.co.llexeter.mysqldesk"
     private static var cache: [UUID: String] = [:]
 

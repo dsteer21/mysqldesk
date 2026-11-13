@@ -23,10 +23,12 @@ BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 "$GH" release view "$TAG" >/dev/null 2>&1 && fail "Release $TAG already exists"
 
 VERSION="$VERSION" ./scripts/make-dmg.sh
+# Only publish builds Apple has notarised (stapled ticket on the DMG).
+xcrun stapler validate -q "build/MysqlDesk-${VERSION}.dmg" || fail "The DMG isn't notarised; check the Developer ID certificate and notary profile"
 
 NOTES="Download **MysqlDesk.dmg**, open it and drag MysqlDesk onto Applications. Needs macOS 14 or later.
 
-The app isn't notarised, so on first launch open **System Settings → Privacy & Security** and click **Open Anyway** (or run \`xattr -dr com.apple.quarantine /Applications/MysqlDesk.app\`)."
+Signed with a Developer ID and notarised by Apple, so it opens without any security warnings."
 
 echo "→ Publishing $TAG…"
 "$GH" release create "$TAG" "build/MysqlDesk-${VERSION}.dmg" build/MysqlDesk.dmg \

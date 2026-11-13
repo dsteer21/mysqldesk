@@ -48,7 +48,7 @@ actor DatabaseConnection {
             configuration.certificateVerification = .none
             tls = configuration
         }
-        var logger = Logger(label: "uk.co.llexeter.mysqldesk")
+        var logger = Logger(label: "uk.co.dave-steer.mysqldesk")
         logger.logLevel = .critical
 
         let connection: MySQLConnection

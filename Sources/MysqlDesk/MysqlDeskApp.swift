@@ -5,6 +5,10 @@ struct MysqlDeskApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = AppStore()
 
+    init() {
+        Preferences.migrateFromOldBundleID()
+    }
+
     var body: some Scene {
         Window("MysqlDesk", id: "main") {
             MainView()

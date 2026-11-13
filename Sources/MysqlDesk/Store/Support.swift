@@ -28,6 +28,22 @@ final class Banner {
     }
 }
 
+/// Settings saved with @AppStorage. They're stored under the bundle ID, so the move from
+/// uk.co.llexeter.mysqldesk to uk.co.dave-steer.mysqldesk copies them across once.
+enum Preferences {
+    static let keys = ["maxRows", "tableRowLimit", "editorFontSize", "stopOnError", "stackResults"]
+
+    static func migrateFromOldBundleID() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "migratedFromLlexeter"),
+              let old = UserDefaults(suiteName: "uk.co.llexeter.mysqldesk") else { return }
+        for key in keys where defaults.object(forKey: key) == nil {
+            if let value = old.object(forKey: key) { defaults.set(value, forKey: key) }
+        }
+        defaults.set(true, forKey: "migratedFromLlexeter")
+    }
+}
+
 /// JSON files in ~/Library/Application Support/MysqlDesk.
 enum Storage {
     static let folder: URL = {

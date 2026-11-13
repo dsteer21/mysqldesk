@@ -5,6 +5,8 @@ set -euo pipefail
 cd "${0:A:h}/.."
 APP="build/MysqlDesk.app"
 VERSION="${VERSION:-$(<VERSION)}"
+# Build number: the commit count, so it always goes up. The App Store needs a new one for every upload.
+BUILD="${BUILD:-$(git rev-list --count HEAD)}"
 
 # Universal binary (Apple Silicon + Intel) so the app runs on any Mac with macOS 14+.
 ARCHS=(--arch arm64 --arch x86_64)
@@ -26,16 +28,18 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
     <key>CFBundleName</key><string>MysqlDesk</string>
     <key>CFBundleDisplayName</key><string>MysqlDesk</string>
-    <key>CFBundleIdentifier</key><string>uk.co.llexeter.mysqldesk</string>
+    <key>CFBundleIdentifier</key><string>uk.co.dave-steer.mysqldesk</string>
     <key>CFBundleExecutable</key><string>MysqlDesk</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-    <key>CFBundleVersion</key><string>${VERSION}</string>
+    <key>CFBundleVersion</key><string>${BUILD}</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+    <!-- Only standard TLS, which is exempt from US export paperwork (asked by App Store Connect). -->
+    <key>ITSAppUsesNonExemptEncryption</key><false/>
     <!-- .sql files can be dropped on the app icon or opened with MysqlDesk from Finder.
          Alternate rank: MysqlDesk is offered, but doesn't take over as the default .sql app. -->
     <key>CFBundleDocumentTypes</key>
@@ -53,11 +57,18 @@ PLIST
 
 # Sign with the same certificate every time, so macOS recognises each new build as the same app and
 # Keychain "Always Allow" keeps working after updates. An ad-hoc signature (-) changes with every build,
-# which makes macOS ask for the Keychain password again. Uses the first Apple Development certificate in
-# the login keychain, or ad-hoc if there isn't one; set SIGN_IDENTITY to choose another (or - for ad-hoc).
-SIGN_IDENTITY="${SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/ { print $2; exit }')}"
+# which makes macOS ask for the Keychain password again.
+# Prefers the Developer ID certificate, with the hardened runtime and secure timestamp that notarisation
+# needs (see make-dmg.sh), then Apple Development, then ad hoc. Set SIGN_IDENTITY to choose (- for ad hoc).
+identity() { security find-identity -v -p codesigning 2>/dev/null | awk -F'"' -v kind="$1" '$2 ~ kind { print $2; exit }'; }
+SIGN_IDENTITY="${SIGN_IDENTITY:-$(identity "^Developer ID Application")}"
+SIGN_IDENTITY="${SIGN_IDENTITY:-$(identity "^Apple Development")}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
-codesign --force --sign "$SIGN_IDENTITY" "$APP"
+if [[ "$SIGN_IDENTITY" == "Developer ID Application"* ]]; then
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+else
+    codesign --force --sign "$SIGN_IDENTITY" "$APP"
+fi
 [[ "$SIGN_IDENTITY" == "-" ]] && echo "  (ad-hoc signed: Keychain will ask again after each update)" || echo "  Signed with: $SIGN_IDENTITY"
 echo "✓ Built $APP"
 
